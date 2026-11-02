@@ -5,20 +5,14 @@ const {
     Routes, 
     SlashCommandBuilder, 
     ChannelType,
-    ActivityType 
 } = require('discord.js');
 const { 
     joinVoiceChannel, 
     getVoiceConnection, 
     VoiceConnectionStatus, 
     entersState,
-    createAudioPlayer,
-    createAudioResource,
-    AudioPlayerStatus,
-    NoSubscriberBehavior
 } = require('@discordjs/voice');
 const http = require('http');
-const { Readable } = require('stream');
 require('dotenv').config();
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -31,7 +25,7 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-// Minimal HTTP server so free hosting health checks (Koyeb, Render, Railway, etc.) stay green
+// Railway can use this endpoint as an optional health check for the worker.
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'alive', uptime: process.uptime() }));
@@ -47,36 +41,6 @@ const client = new Client({
     ]
 });
 
-// Create a silent audio stream to keep Discord gateway from kicking the bot for total inactivity
-class SilenceStream extends Readable {
-    _read() {
-        // 20ms of stereo 16-bit 48kHz PCM silence
-        this.push(Buffer.alloc(1920));
-    }
-}
-
-let player = null;
-
-function setupAudioPlayer() {
-    player = createAudioPlayer({
-        behaviors: {
-            noSubscriberBehavior: NoSubscriberBehavior.Play
-        }
-    });
-
-    const silenceResource = createAudioResource(new SilenceStream());
-    player.play(silenceResource);
-
-    player.on(AudioPlayerStatus.Idle, () => {
-        // Restart silence stream if it stops
-        player.play(createAudioResource(new SilenceStream()));
-    });
-
-    player.on('error', error => {
-        console.error('[AudioPlayer Error]', error.message);
-    });
-}
-
 function connectToVoice(channel) {
     console.log(`[Voice] Attempting connection to ${channel.name} (${channel.id})...`);
 
@@ -85,11 +49,8 @@ function connectToVoice(channel) {
         guildId: channel.guild.id,
         adapterCreator: channel.guild.voiceAdapterCreator,
         selfDeaf: true,
-        selfMute: false
+        selfMute: true
     });
-
-    if (!player) setupAudioPlayer();
-    connection.subscribe(player);
 
     connection.on(VoiceConnectionStatus.Ready, () => {
         console.log(`[Voice] Successfully joined and active in ${channel.name}!`);
@@ -152,7 +113,7 @@ async function registerCommands(clientId) {
 
 client.once('ready', async () => {
     console.log(`[Bot] Logged in as ${client.user.tag}!`);
-    client.user.setActivity('24/7 VC Radio', { type: ActivityType.Listening });
+    client.user.setActivity(null);
 
     await registerCommands(client.user.id);
 
@@ -197,6 +158,9 @@ client.on('interactionCreate', async interaction => {
     const { commandName } = interaction;
 
     if (commandName === 'stay') {
+        if (TARGET_GUILD_ID && interaction.guildId !== TARGET_GUILD_ID) {
+            return interaction.reply({ content: 'This bot is not configured for this server.', ephemeral: true });
+        }
         const channel = interaction.options.getChannel('channel') || interaction.member.voice?.channel;
 
         if (!channel) {
@@ -204,6 +168,10 @@ client.on('interactionCreate', async interaction => {
                 content: '⚠️ Please join a voice channel first, or select one using the `channel` parameter!',
                 ephemeral: true
             });
+        }
+
+        if (channel.guildId !== interaction.guildId) {
+            return interaction.reply({ content: 'Choose a voice channel in this server.', ephemeral: true });
         }
 
         connectToVoice(channel);
@@ -214,6 +182,9 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (commandName === 'status') {
+        if (TARGET_GUILD_ID && interaction.guildId !== TARGET_GUILD_ID) {
+            return interaction.reply({ content: 'This bot is not configured for this server.', ephemeral: true });
+        }
         const connection = getVoiceConnection(interaction.guildId);
         if (!connection) {
             return interaction.reply({ content: '❌ Not currently connected to any voice channel in this server.', ephemeral: true });
@@ -225,6 +196,9 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (commandName === 'leave') {
+        if (TARGET_GUILD_ID && interaction.guildId !== TARGET_GUILD_ID) {
+            return interaction.reply({ content: 'This bot is not configured for this server.', ephemeral: true });
+        }
         const connection = getVoiceConnection(interaction.guildId);
         if (connection) {
             connection.destroy();
